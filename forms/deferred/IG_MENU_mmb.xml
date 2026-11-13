@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Module version="122100000" xmlns="http://xmlns.oracle.com/Forms">
+  <MenuModule Name="IG_MENU" MainMenu="IG_MAIN_MENU">
+    <AttachedLibrary Name="IG_LIB" LibraryLocation="IG_LIB.pll" />
+    <Menu Name="IG_MAIN_MENU">
+      <MenuItem Name="M_DASH" Label="Dashboard" MenuItemType="Plain" CommandType="PL/SQL" CommandText="BEGIN ig_nav.open_module('IG_MAIN'); END;" />
+      <MenuItem Name="M_INV" Label="Invoices" MenuItemType="Plain" CommandType="PL/SQL" CommandText="BEGIN ig_nav.open_module('IG_INVOICE'); END;" />
+      <MenuItem Name="M_EXC" Label="Exceptions" MenuItemType="Plain" CommandType="PL/SQL" CommandText="BEGIN ig_nav.open_module('IG_EXCEPTIONS'); END;" />
+      <MenuItem Name="M_PO" Label="PO and GRN" MenuItemType="Plain" CommandType="PL/SQL" CommandText="BEGIN ig_nav.open_module('IG_PO_GRN'); END;" />
+      <MenuItem Name="M_SETUP" Label="Setup" MenuItemType="Plain" CommandType="PL/SQL" CommandText="BEGIN ig_nav.open_module('IG_SETUP'); END;" />
+      <MenuItem Name="M_EXIT" Label="Exit" MenuItemType="Plain" CommandType="PL/SQL" CommandText="BEGIN Exit_Form; END;" />
+    </Menu>
+  </MenuModule>
+</Module>

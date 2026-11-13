@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Module version="122100000" xmlns="http://xmlns.oracle.com/Forms">
+  <FormModule Name="IG_MAIN" Title="InvoiceGuard - Dashboard" ConsoleWindow="W_MAIN">
+    <Coordinate CoordinateSystem="Real" RealUnit="Pixel" />
+    <AttachedLibrary Name="IG_LIB" LibraryLocation="IG_LIB.pll" />
+    <Window Name="W_MAIN" Title="InvoiceGuard - Dashboard" Width="838" Height="544" PrimaryCanvas="CV_MAIN" />
+    <Canvas Name="CV_MAIN" CanvasType="Content" WindowName="W_MAIN" Width="838" Height="544" ViewportXPosition="0" ViewportYPosition="0" ViewportWidth="838" ViewportHeight="544" ShowHorizontalScrollbar="false" ShowVerticalScrollbar="false" />
+    <Alert Name="IG_ERROR_ALERT" Title="InvoiceGuard" AlertStyle="Stop" AlertMessage="InvoiceGuard could not complete the action. See the message line." Button1Label="OK" DefaultAlertButton="Button 1" />
+    <Alert Name="IG_CONFIRM_ALERT" Title="InvoiceGuard" AlertStyle="Caution" AlertMessage="Are you sure you want to continue?" Button1Label="OK" Button2Label="Cancel" DefaultAlertButton="Button 1" />
+    <VisualAttribute Name="VA_HIGH" BackColor="r100g0b0" ForegroundColor="white" />
+    <VisualAttribute Name="VA_MEDIUM" BackColor="yellow" ForegroundColor="black" />
+    <VisualAttribute Name="VA_LOW" BackColor="white" ForegroundColor="black" />
+    <RecordGroup Name="RG_USERS" RecordGroupType="Query" RecordGroupQuery="SELECT user_name, full_name, role FROM IG_USERS_LOV_V">
+      <RecordGroupColumn Name="USER_NAME" />
+      <RecordGroupColumn Name="FULL_NAME" />
+      <RecordGroupColumn Name="ROLE" />
+    </RecordGroup>
+    <LOV Name="LOV_USERS" RecordGroupName="RG_USERS" Title="Users">
+      <LOVColumnMapping Name="USER_NAME" ReturnItem="CTRL.USER_NAME" Title="User_name" />
+    </LOV>
+    <Trigger Name="PRE-FORM" TriggerText="BEGIN&#10;  DEFAULT_VALUE(NULL, 'GLOBAL.IG_USER');&#10;  DEFAULT_VALUE(NULL, 'GLOBAL.IG_ROLE');&#10;  DEFAULT_VALUE(NULL, 'GLOBAL.F_CAT');&#10;  DEFAULT_VALUE(NULL, 'GLOBAL.F_SEV');&#10;  DEFAULT_VALUE(NULL, 'GLOBAL.F_HCODE');&#10;  DEFAULT_VALUE(NULL, 'GLOBAL.F_VEND');&#10;  DEFAULT_VALUE(NULL, 'GLOBAL.F_AGE');&#10;  ig_nav.init_globals;&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+    <Trigger Name="ON-ERROR" TriggerText="BEGIN&#10;  ig_msg.show_error;&#10;END;" />
+    <Trigger Name="KEY-EXIT" TriggerText="BEGIN&#10;  EXIT_FORM(NO_VALIDATE);&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+    <Trigger Name="WHEN-NEW-FORM-INSTANCE" TriggerText="BEGIN&#10;  Go_Block('CTRL');&#10;  ig_nav.restore_session(FALSE);&#10;  IF ig_msg.global_value('GLOBAL.IG_USER') IS NOT NULL THEN&#10;    ig_nav.refresh_dashboard;&#10;  END IF;&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+    <Trigger Name="KEY-COMMIT" TriggerText="BEGIN&#10;  ig_nav.save;&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+    <Block Name="CTRL" DatabaseBlock="false">
+      <Item Name="USER_NAME" ItemType="Text Item" DataType="Char" MaximumLength="30" DatabaseItem="false" CanvasName="CV_MAIN" XPosition="20" YPosition="20" Width="200" Height="22" Prompt="User name" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="true" Required="true" LovName="LOV_USERS" />
+      <Item Name="BTN_LOGIN" ItemType="Push Button" DatabaseItem="false" CanvasName="CV_MAIN" XPosition="230" YPosition="20" Width="110" Height="22" Label="Log in" Enabled="true">
+        <Trigger Name="WHEN-BUTTON-PRESSED" TriggerText="BEGIN&#10;  ig_session_pkg.set_user(UPPER(TRIM(:CTRL.USER_NAME)));&#10;  COPY(ig_session_pkg.current_user, 'GLOBAL.IG_USER');&#10;  COPY(ig_session_pkg.current_role, 'GLOBAL.IG_ROLE');&#10;  :CTRL.LOGIN_STATUS := 'Logged in as ' || ig_msg.global_value('GLOBAL.IG_USER') || ' (' || ig_msg.global_value('GLOBAL.IG_ROLE') || ')';&#10;  ig_nav.refresh_dashboard;&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+      </Item>
+      <Item Name="LOGIN_STATUS" ItemType="Display Item" DataType="Char" MaximumLength="100" DatabaseItem="false" CanvasName="CV_MAIN" XPosition="20" YPosition="70" Width="420" Height="22" Prompt="Session" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="true" />
+      <Item Name="BTN_REFRESH" ItemType="Push Button" DatabaseItem="false" CanvasName="CV_MAIN" XPosition="20" YPosition="114" Width="130" Height="22" Label="Refresh KPIs" Enabled="true">
+        <Trigger Name="WHEN-BUTTON-PRESSED" TriggerText="BEGIN&#10;  ig_nav.refresh_dashboard;&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+      </Item>
+      <Item Name="BTN_INVOICES" ItemType="Push Button" DatabaseItem="false" CanvasName="CV_MAIN" XPosition="160" YPosition="114" Width="120" Height="22" Label="Invoices" Enabled="true">
+        <Trigger Name="WHEN-BUTTON-PRESSED" TriggerText="BEGIN&#10;  ig_nav.open_module('IG_INVOICE');&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+      </Item>
+      <Item Name="BTN_EXCEPTIONS" ItemType="Push Button" DatabaseItem="false" CanvasName="CV_MAIN" XPosition="290" YPosition="114" Width="120" Height="22" Label="Exceptions" Enabled="true">
+        <Trigger Name="WHEN-BUTTON-PRESSED" TriggerText="BEGIN&#10;  ig_nav.open_module('IG_EXCEPTIONS');&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+      </Item>
+      <Item Name="BTN_PO_GRN" ItemType="Push Button" DatabaseItem="false" CanvasName="CV_MAIN" XPosition="420" YPosition="114" Width="120" Height="22" Label="PO and GRN" Enabled="true">
+        <Trigger Name="WHEN-BUTTON-PRESSED" TriggerText="BEGIN&#10;  ig_nav.open_module('IG_PO_GRN');&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+      </Item>
+      <Item Name="BTN_SETUP" ItemType="Push Button" DatabaseItem="false" CanvasName="CV_MAIN" XPosition="550" YPosition="114" Width="110" Height="22" Label="Setup" Enabled="true">
+        <Trigger Name="WHEN-BUTTON-PRESSED" TriggerText="BEGIN&#10;  ig_nav.open_module('IG_SETUP');&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+      </Item>
+      <Item Name="BTN_EXIT" ItemType="Push Button" DatabaseItem="false" CanvasName="CV_MAIN" XPosition="670" YPosition="114" Width="70" Height="22" Label="Exit" Enabled="true">
+        <Trigger Name="WHEN-BUTTON-PRESSED" TriggerText="BEGIN&#10;  EXIT_FORM(NO_VALIDATE);&#10;EXCEPTION&#10;  WHEN OTHERS THEN&#10;    ig_msg.show_error(SQLERRM);&#10;END;" />
+      </Item>
+    </Block>
+    <Block Name="KPI" DatabaseBlock="true" QueryDataSourceName="IG_KPI_V" QueryDataSourceType="Table" RecordOrientation="Vertical" RecordsDisplayCount="1" QueryAllowed="true" InsertAllowed="false" UpdateAllowed="false" DeleteAllowed="false">
+      <Item Name="INVOICES_TOTAL" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="invoices_total" CanvasName="CV_MAIN" XPosition="20" YPosition="172" Width="140" Height="22" Prompt="Invoices total" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="ON_HOLD" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="on_hold" CanvasName="CV_MAIN" XPosition="176" YPosition="172" Width="140" Height="22" Prompt="On hold" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="VALIDATED" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="validated" CanvasName="CV_MAIN" XPosition="332" YPosition="172" Width="140" Height="22" Prompt="Validated" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="APPROVED" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="approved" CanvasName="CV_MAIN" XPosition="523" YPosition="172" Width="140" Height="22" Prompt="Approved" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="PAID" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="paid" CanvasName="CV_MAIN" XPosition="686" YPosition="172" Width="140" Height="22" Prompt="Paid" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="AMOUNT_ON_HOLD" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="amount_on_hold" CanvasName="CV_MAIN" XPosition="20" YPosition="222" Width="140" Height="22" Prompt="Amount on hold" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="AMOUNT_PREVENTED" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="amount_prevented" CanvasName="CV_MAIN" XPosition="176" YPosition="222" Width="140" Height="22" Prompt="Amount prevented" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="BLOCKED_APPROVAL_ATTEMPTS" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="blocked_approval_attempts" CanvasName="CV_MAIN" XPosition="332" YPosition="222" Width="140" Height="22" Prompt="Blocked approval attempts" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="FIRST_PASS_MATCH_RATE" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="first_pass_match_rate" CanvasName="CV_MAIN" XPosition="523" YPosition="222" Width="140" Height="22" Prompt="First pass match rate" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+    </Block>
+    <Block Name="DASH" DatabaseBlock="true" QueryDataSourceName="IG_DASHBOARD_V" QueryDataSourceType="Table" RecordOrientation="Vertical" RecordsDisplayCount="5" QueryAllowed="true" InsertAllowed="false" UpdateAllowed="false" DeleteAllowed="false">
+      <Item Name="HOLD_CODE" ItemType="Text Item" DataType="Char" MaximumLength="100" DatabaseItem="true" ColumnName="hold_code" CanvasName="CV_MAIN" XPosition="20" YPosition="292" Width="140" Height="22" Prompt="Hold code" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="OPEN_COUNT" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="open_count" CanvasName="CV_MAIN" XPosition="176" YPosition="292" Width="110" Height="22" Prompt="Open count" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="OPEN_AMOUNT" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="open_amount" CanvasName="CV_MAIN" XPosition="302" YPosition="292" Width="160" Height="22" Prompt="Open amount" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+      <Item Name="RELEASED_COUNT" ItemType="Text Item" DataType="Number" MaximumLength="100" DatabaseItem="true" ColumnName="released_count" CanvasName="CV_MAIN" XPosition="478" YPosition="292" Width="130" Height="22" Prompt="Released count" PromptAttachmentEdge="Top" PromptAlign="Start" Enabled="true" UpdateAllowed="false" />
+    </Block>
+  </FormModule>
+</Module>

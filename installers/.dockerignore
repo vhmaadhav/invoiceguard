@@ -1,0 +1,6 @@
+# Named build context "installers": send only the extracted Oracle installers and the JDK tarball.
+# The V-zips hold the same installer files, so sending them would double the upload.
+*
+!fmw_14.1.2.0.0_fr_linux64.bin
+!fmw_14.1.2.0.0_infrastructure.jar
+!jdk-21.0.8_linux-x64_bin.tar.gz

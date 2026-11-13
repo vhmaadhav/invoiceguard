@@ -1,0 +1,375 @@
+/* ============================================================================
+   IG_LIB.pld : InvoiceGuard shared PL/SQL library (Forms text module)
+   ----------------------------------------------------------------------------
+   Convert to IG_LIB.pll with frmcmp_batch (see scripts/build_forms.sh) and attach
+   it to every form (AttachedLibrary IG_LIB in each *_fmb.xml).
+
+   Packages (SPEC section 7):  ig_msg, ig_nav, ig_ui
+   The library never writes invoice status, risk score, approvals or holds. It only
+   calls SPEC package APIs (which the calling trigger wraps), shows messages, moves
+   between forms and sets item/block properties.
+
+   Each form defines the alerts IG_ERROR_ALERT (stop, OK) and IG_CONFIRM_ALERT
+   (caution, OK/Cancel); this library refers to them by name.
+
+   Item references by name use NAME_IN('BLOCK.ITEM') so the library compiles without
+   binding to any one form. ig_ui.refresh_invoice / apply_invoice_state assume the
+   IG_INVOICE block layout (INV_HDR, INV_LINES, HOLDS, CTRL).
+   ============================================================================ */
+
+/* ---------------------------------------------------------------------------
+   Package specification : ig_msg
+   --------------------------------------------------------------------------- */
+PACKAGE ig_msg IS
+  /* TRUE when the block exists in the running form (library routines name blocks that not every form has). */
+  FUNCTION block_exists(p_block VARCHAR2) RETURN BOOLEAN;
+  /* Reads a global (NAME_IN) and returns NULL while the global does not exist yet (FRM-40815). */
+  FUNCTION global_value(p_name VARCHAR2) RETURN VARCHAR2;
+  /* Shows the IG-nnnnn message of an error. p_err: the text of the error, e.g.
+     SQLERRM in a WHEN OTHERS handler of a trigger that calls a stored package directly.
+     NULL (ON-ERROR triggers): the Forms ERROR_TYPE/ERROR_CODE/ERROR_TEXT built-ins, plus
+     DBMS_ERROR_TEXT for the Forms errors that wrap a DML or PL/SQL error (40735, 40508,
+     40509, 40510). Never raises. */
+  PROCEDURE show_error(p_err VARCHAR2 DEFAULT NULL);
+  /* Information message through the error alert (style set by the form). */
+  PROCEDURE info(p_text VARCHAR2);
+END ig_msg;
+
+PACKAGE BODY ig_msg IS
+
+  FUNCTION block_exists(p_block VARCHAR2) RETURN BOOLEAN IS
+  BEGIN
+    RETURN NOT Id_Null(Find_Block(p_block));
+  END block_exists;
+
+  FUNCTION global_value(p_name VARCHAR2) RETURN VARCHAR2 IS
+  BEGIN
+    RETURN NAME_IN(p_name);
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN NULL;
+  END global_value;
+
+  FUNCTION user_text(p_raw VARCHAR2) RETURN VARCHAR2 IS
+    l_txt VARCHAR2(4000) := p_raw;
+    l_pos PLS_INTEGER;
+  BEGIN
+    /* DBMS_ERROR_TEXT looks like "ORA-20003: IG-00003: <sentence>\n..." or
+       "FRM-40735: ... ORA-20003: IG-00003: ...". Keep from "IG-" to end of line. */
+    l_pos := INSTR(l_txt, 'IG-');
+    IF l_pos > 0 THEN
+      l_txt := SUBSTR(l_txt, l_pos);
+    ELSE
+      l_txt := 'Unexpected error: ' || SUBSTR(l_txt, 1, 200);
+    END IF;
+    l_pos := INSTR(l_txt, CHR(10));
+    IF l_pos > 0 THEN
+      l_txt := SUBSTR(l_txt, 1, l_pos - 1);
+    END IF;
+    RETURN RTRIM(l_txt);
+  END user_text;
+
+  /* Text of the current Forms error (ON-ERROR context). Forms errors 40735, 40508,
+     40509 and 40510 wrap a DML or PL/SQL error, so the database text is appended. */
+  FUNCTION forms_error_text RETURN VARCHAR2 IS
+    l_code NUMBER := ERROR_CODE;
+    l_txt  VARCHAR2(4000);
+  BEGIN
+    IF l_code IS NULL THEN
+      RETURN DBMS_ERROR_TEXT;
+    END IF;
+    l_txt := NVL(ERROR_TYPE, 'FRM') || '-' || l_code || ': ' || ERROR_TEXT;
+    IF l_code IN (40735, 40508, 40509, 40510) AND DBMS_ERROR_TEXT IS NOT NULL THEN
+      l_txt := l_txt || CHR(10) || DBMS_ERROR_TEXT;
+    END IF;
+    RETURN l_txt;
+  END forms_error_text;
+
+  PROCEDURE show_error(p_err VARCHAR2) IS
+    l_alert ALERT;
+    l_btn   NUMBER;
+    l_text  VARCHAR2(4000);
+  BEGIN
+    l_text := user_text(NVL(p_err, NVL(forms_error_text, 'No error text available')));
+    l_alert := FIND_ALERT('IG_ERROR_ALERT');
+    SET_ALERT_PROPERTY(l_alert, ALERT_MESSAGE_TEXT, l_text);
+    l_btn := SHOW_ALERT(l_alert);
+  EXCEPTION
+    WHEN OTHERS THEN
+      /* Last resort: never let the error handler itself fail. */
+      Message('InvoiceGuard: ' || SUBSTR(NVL(p_err, DBMS_ERROR_TEXT), 1, 200));
+  END show_error;
+
+  PROCEDURE info(p_text VARCHAR2) IS
+    l_alert ALERT;
+    l_btn   NUMBER;
+  BEGIN
+    l_alert := FIND_ALERT('IG_ERROR_ALERT');
+    SET_ALERT_PROPERTY(l_alert, ALERT_MESSAGE_TEXT, p_text);
+    l_btn := SHOW_ALERT(l_alert);
+  END info;
+
+END ig_msg;
+
+/* ---------------------------------------------------------------------------
+   Package specification : ig_nav
+   --------------------------------------------------------------------------- */
+PACKAGE ig_nav IS
+  PROCEDURE init_globals;
+  /* p_required TRUE: a child form needs a logged-in user (raises FORM_TRIGGER_FAILURE).
+     Re-establishes the DB session user from ig_msg.global_value('GLOBAL.IG_USER') (ig_session_pkg.set_user). */
+  PROCEDURE restore_session(p_required BOOLEAN);
+  /* COMMIT_FORM when the form has changes. */
+  PROCEDURE save;
+  /* Open another module (CALL_FORM) after a login check. */
+  PROCEDURE open_module(p_module VARCHAR2);
+  /* Open IG_INVOICE for one invoice through the P_INVOICE_ID module parameter. */
+  PROCEDURE open_invoice(p_id NUMBER);
+  /* Re-query KPI and DASH blocks on the IG_MAIN dashboard. */
+  PROCEDURE refresh_dashboard;
+  /* Move to the Approval history tab (APPR block) and query it. */
+  PROCEDURE show_history;
+END ig_nav;
+
+PACKAGE BODY ig_nav IS
+
+  /* Creates every global the forms read (COPY creates a missing global). An existing value is
+     copied back unchanged, so this is safe to run in every PRE-FORM. */
+  PROCEDURE init_globals IS
+  BEGIN
+    NULL;  -- the forms create the globals in PRE-FORM (see forms/tools/gen_forms_xml.py GLOBALS_CREATE)
+  END init_globals;
+
+  PROCEDURE restore_session(p_required BOOLEAN) IS
+  BEGIN
+    IF ig_msg.global_value('GLOBAL.IG_USER') IS NULL THEN
+      IF p_required THEN
+        ig_msg.info('Log in on the InvoiceGuard dashboard first.');
+        RAISE FORM_TRIGGER_FAILURE;
+      END IF;
+      RETURN;
+    END IF;
+    ig_session_pkg.set_user(ig_msg.global_value('GLOBAL.IG_USER'));
+  END restore_session;
+
+  PROCEDURE save IS
+  BEGIN
+    IF NAME_IN('SYSTEM.FORM_STATUS') = 'CHANGED' THEN
+      COMMIT_FORM;
+    END IF;
+  END save;
+
+  PROCEDURE open_module(p_module VARCHAR2) IS
+  BEGIN
+    IF ig_msg.global_value('GLOBAL.IG_USER') IS NULL THEN
+      ig_msg.info('Log in on the InvoiceGuard dashboard first.');
+      RETURN;
+    END IF;
+    CALL_FORM(p_module, NO_HIDE, NO_REPLACE, NO_QUERY_ONLY);  -- child opens as its own window
+  END open_module;
+
+  PROCEDURE open_invoice(p_id NUMBER) IS
+    l_pl ParamList;
+  BEGIN
+    IF p_id IS NULL THEN
+      RETURN;
+    END IF;
+    l_pl := Get_Parameter_List('IG_INV_PL');
+    IF Id_Null(l_pl) THEN
+      l_pl := Create_Parameter_List('IG_INV_PL');
+    ELSE
+      Destroy_Parameter_List(l_pl);
+      l_pl := Create_Parameter_List('IG_INV_PL');
+    END IF;
+    Add_Parameter(l_pl, 'P_INVOICE_ID', TEXT_PARAMETER, TO_CHAR(p_id));
+    CALL_FORM('IG_INVOICE', NO_HIDE, NO_REPLACE, NO_QUERY_ONLY, l_pl);
+  END open_invoice;
+
+  PROCEDURE refresh_dashboard IS
+  BEGIN
+    IF NOT (ig_msg.block_exists('KPI') AND ig_msg.block_exists('DASH') AND ig_msg.block_exists('CTRL')) THEN
+      RETURN;
+    END IF;
+    IF ig_msg.global_value('GLOBAL.IG_USER') IS NULL THEN
+      RETURN;
+    END IF;
+    Go_Block('KPI');
+    Execute_Query;
+    Go_Block('DASH');
+    Execute_Query;
+    Go_Block('CTRL');
+  END refresh_dashboard;
+
+  PROCEDURE show_history IS
+  BEGIN
+    IF NOT ig_msg.block_exists('APPR') THEN
+      RETURN;
+    END IF;
+    Go_Block('APPR');
+    Execute_Query;
+  END show_history;
+
+END ig_nav;
+
+/* ---------------------------------------------------------------------------
+   Package specification : ig_ui
+   --------------------------------------------------------------------------- */
+PACKAGE ig_ui IS
+  /* Visual attribute for a severity: HIGH -> VA_HIGH, MEDIUM -> VA_MEDIUM, else VA_LOW.
+     Applied to the listed items of the current record of p_block. */
+  PROCEDURE set_severity_va(p_block VARCHAR2, p_severity VARCHAR2,
+                            p_items VARCHAR2 DEFAULT 'HOLD_CODE,HOLD_DESC,SEVERITY');
+  /* Risk score colour: >= 60 VA_HIGH, >= 30 VA_MEDIUM, else VA_LOW. p_item = 'BLOCK.ITEM'. */
+  PROCEDURE set_risk_va(p_item VARCHAR2, p_score NUMBER);
+  /* Enables/disables invoice action buttons and line editing from INV_HDR status and role. */
+  PROCEDURE apply_invoice_state;
+  /* Re-query the current invoice (INV_HDR, and its detail blocks through the relations). */
+  PROCEDURE refresh_invoice;
+  /* Apply the FILTER block to the QUEUE block and query it (IG_EXCEPTIONS). */
+  PROCEDURE refresh_queue;
+  /* Value of a reason/comment item. Returns NULL when empty; the DB then raises -20009. */
+  FUNCTION ask_reason(p_item VARCHAR2) RETURN VARCHAR2;
+  /* Yes/No confirmation through IG_CONFIRM_ALERT. TRUE when OK is pressed. */
+  FUNCTION confirm(p_text VARCHAR2) RETURN BOOLEAN;
+END ig_ui;
+
+PACKAGE BODY ig_ui IS
+
+  PROCEDURE set_enabled(p_item VARCHAR2, p_on BOOLEAN) IS
+  BEGIN
+    IF Id_Null(Find_Item(p_item)) THEN
+      RETURN;  -- the item is not in this form
+    END IF;
+    IF p_on THEN
+      Set_Item_Property(p_item, ENABLED, PROPERTY_TRUE);
+    ELSE
+      Set_Item_Property(p_item, ENABLED, PROPERTY_FALSE);
+    END IF;
+  END set_enabled;
+
+  PROCEDURE set_severity_va(p_block VARCHAR2, p_severity VARCHAR2, p_items VARCHAR2) IS
+    l_va   VARCHAR2(30);
+    l_list VARCHAR2(400) := p_items || ',';
+    l_pos  PLS_INTEGER;
+    l_item VARCHAR2(60);
+  BEGIN
+    l_va := CASE p_severity
+              WHEN 'HIGH' THEN 'VA_HIGH'
+              WHEN 'MEDIUM' THEN 'VA_MEDIUM'
+              ELSE 'VA_LOW'
+            END;
+    LOOP
+      l_pos := INSTR(l_list, ',');
+      EXIT WHEN l_pos = 0;
+      l_item := SUBSTR(l_list, 1, l_pos - 1);
+      l_list := SUBSTR(l_list, l_pos + 1);
+      IF l_item IS NOT NULL THEN
+        Set_Item_Instance_Property(p_block || '.' || l_item, CURRENT_RECORD,
+                                   VISUAL_ATTRIBUTE, l_va);
+      END IF;
+    END LOOP;
+  END set_severity_va;
+
+  PROCEDURE set_risk_va(p_item VARCHAR2, p_score NUMBER) IS
+    l_va VARCHAR2(30);
+  BEGIN
+    IF NVL(p_score, 0) >= 60 THEN
+      l_va := 'VA_HIGH';
+    ELSIF NVL(p_score, 0) >= 30 THEN
+      l_va := 'VA_MEDIUM';
+    ELSE
+      l_va := 'VA_LOW';
+    END IF;
+    Set_Item_Instance_Property(p_item, CURRENT_RECORD, VISUAL_ATTRIBUTE, l_va);
+  END set_risk_va;
+
+  PROCEDURE apply_invoice_state IS
+    l_status VARCHAR2(20) := NAME_IN('INV_HDR.STATUS');
+    l_role   VARCHAR2(30) := ig_msg.global_value('GLOBAL.IG_ROLE');
+    l_mgr    BOOLEAN;
+    l_open   BOOLEAN;
+  BEGIN
+    IF NOT (ig_msg.block_exists('INV_HDR') AND ig_msg.block_exists('INV_LINES')) THEN
+      RETURN;
+    END IF;
+    /* A new, unsaved invoice has no status yet; the DB default is DRAFT. */
+    l_open := NVL(l_status, 'DRAFT') IN ('DRAFT', 'ON_HOLD', 'VALIDATED');
+    l_mgr  := NVL(l_role, ' ') IN ('AP_MANAGER', 'FIN_CONTROLLER');
+
+    set_enabled('CTRL.BTN_VALIDATE', l_open);
+    /* Enabled for every role whenever the invoice is VALIDATED: the DB (ig_workflow_pkg.approve_invoice)
+       decides who may approve and raises IG-00007 for a clerk, which the form shows in the error alert. */
+    set_enabled('CTRL.BTN_APPROVE', NVL(l_status, ' ') = 'VALIDATED');
+    set_enabled('CTRL.BTN_REJECT', l_open AND l_mgr);
+    set_enabled('CTRL.BTN_CANCEL', NVL(l_status, ' ') NOT IN ('PAID', 'CANCELLED')
+                AND NVL(l_role, ' ') IN ('AP_CLERK', 'AP_MANAGER', 'FIN_CONTROLLER'));
+    set_enabled('CTRL.BTN_RELEASE', NVL(l_status, ' ') = 'ON_HOLD');
+    set_enabled('CTRL.BTN_PAID', NVL(l_status, ' ') = 'APPROVED'
+                AND NVL(l_role, ' ') = 'FIN_CONTROLLER');
+
+    /* Header amounts and lines are editable only before approval. */
+    IF l_open THEN
+      Set_Block_Property('INV_HDR', UPDATE_ALLOWED, PROPERTY_TRUE);
+      Set_Block_Property('INV_LINES', INSERT_ALLOWED, PROPERTY_TRUE);
+      Set_Block_Property('INV_LINES', UPDATE_ALLOWED, PROPERTY_TRUE);
+      Set_Block_Property('INV_LINES', DELETE_ALLOWED, PROPERTY_TRUE);
+    ELSE
+      Set_Block_Property('INV_HDR', UPDATE_ALLOWED, PROPERTY_FALSE);
+      Set_Block_Property('INV_LINES', INSERT_ALLOWED, PROPERTY_FALSE);
+      Set_Block_Property('INV_LINES', UPDATE_ALLOWED, PROPERTY_FALSE);
+      Set_Block_Property('INV_LINES', DELETE_ALLOWED, PROPERTY_FALSE);
+    END IF;
+  END apply_invoice_state;
+
+  PROCEDURE refresh_invoice IS
+    l_id NUMBER := TO_NUMBER(NAME_IN('INV_HDR.INVOICE_ID'));
+  BEGIN
+    IF NOT ig_msg.block_exists('INV_HDR') THEN
+      RETURN;
+    END IF;
+    IF l_id IS NULL THEN
+      RETURN;
+    END IF;
+    Go_Block('INV_HDR');
+    Set_Block_Property('INV_HDR', DEFAULT_WHERE, 'INVOICE_ID = ' || TO_CHAR(l_id));
+    Execute_Query;
+    apply_invoice_state;
+  END refresh_invoice;
+
+  PROCEDURE refresh_queue IS
+  BEGIN
+    IF NOT ig_msg.block_exists('QUEUE') THEN
+      RETURN;
+    END IF;
+    /* Filters are copied to globals so the DEFAULT_WHERE can bind them. */
+    COPY(NAME_IN('FILTER.CATEGORY'), 'GLOBAL.F_CAT');
+    COPY(NAME_IN('FILTER.SEVERITY'), 'GLOBAL.F_SEV');
+    COPY(NAME_IN('FILTER.HOLD_CODE'), 'GLOBAL.F_HCODE');
+    COPY(NAME_IN('FILTER.VENDOR_NUM'), 'GLOBAL.F_VEND');
+    COPY(TO_CHAR(TO_NUMBER(NAME_IN('FILTER.MIN_AGE'))), 'GLOBAL.F_AGE');
+    Set_Block_Property('QUEUE', DEFAULT_WHERE,
+        '(:GLOBAL.F_CAT IS NULL OR category = :GLOBAL.F_CAT)'
+        || ' AND (:GLOBAL.F_SEV IS NULL OR severity = :GLOBAL.F_SEV)'
+        || ' AND (:GLOBAL.F_HCODE IS NULL OR hold_code = :GLOBAL.F_HCODE)'
+        || ' AND (:GLOBAL.F_VEND IS NULL OR vendor_num = :GLOBAL.F_VEND)'
+        || ' AND (:GLOBAL.F_AGE IS NULL OR age_days >= :GLOBAL.F_AGE)');
+    Go_Block('QUEUE');
+    Execute_Query;
+  END refresh_queue;
+
+  FUNCTION ask_reason(p_item VARCHAR2) RETURN VARCHAR2 IS
+  BEGIN
+    /* The reason is mandatory for reject, cancel and release; the package raises -20009
+       when it is NULL, so the caller does not need to check it here. */
+    RETURN TRIM(NAME_IN(p_item));
+  END ask_reason;
+
+  FUNCTION confirm(p_text VARCHAR2) RETURN BOOLEAN IS
+    l_alert ALERT;
+  BEGIN
+    l_alert := FIND_ALERT('IG_CONFIRM_ALERT');
+    SET_ALERT_PROPERTY(l_alert, ALERT_MESSAGE_TEXT, p_text);
+    RETURN SHOW_ALERT(l_alert) = ALERT_BUTTON1;
+  END confirm;
+
+END ig_ui;
